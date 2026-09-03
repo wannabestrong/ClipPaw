@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+:root {
+  --background: oklch(0.985 0.003 286);
+  --foreground: oklch(0.22 0.015 286);
+  --card: oklch(1 0 0);
+  --primary: oklch(0.55 0.19 262);
+  --primary-foreground: oklch(0.99 0.005 262);
+  --muted: oklch(0.955 0.008 286);
+  --muted-foreground: oklch(0.52 0.02 286);
+  --accent: oklch(0.95 0.025 262);
+  --border: oklch(0.9 0.012 286);
+  --ring: oklch(0.62 0.18 262);
+  --destructive: oklch(0.58 0.22 27);
+}
+
+.dark {
+  --background: oklch(0.17 0.015 286);
+  --foreground: oklch(0.94 0.008 286);
+  --card: oklch(0.205 0.017 286);
+  --primary: oklch(0.72 0.15 262);
+  --primary-foreground: oklch(0.18 0.02 262);
+  --muted: oklch(0.25 0.02 286);
+  --muted-foreground: oklch(0.68 0.018 286);
+  --accent: oklch(0.27 0.04 262);
+  --border: oklch(0.31 0.02 286);
+  --ring: oklch(0.72 0.15 262);
+  --destructive: oklch(0.7 0.18 25);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+  font-family: Inter, "Microsoft YaHei UI", "Segoe UI", sans-serif;
+}
+
+.icon-button {
+  display: inline-flex;
+  height: 2.25rem;
+  width: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.75rem;
+  color: var(--muted-foreground);
+  transition: color 150ms, background-color 150ms;
+}
+
+.icon-button:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  color: var(--foreground);
+}
+
+.context-menu-item:hover {
+  background: var(--accent);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
