@@ -1,16 +1,21 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::database::{content_hash, Database};
 
+/// 自己写进剪贴板的内容，在这个时间窗内被监听到就当成回写忽略。
+/// 超时未消费的条目自动失效，避免暂停监听后 hash 永久残留。
+const IGNORED_WRITE_TTL: Duration = Duration::from_secs(2);
+
 #[derive(Clone)]
 pub struct ClipboardListener {
     paused: Arc<AtomicBool>,
-    ignored_hashes: Arc<Mutex<HashSet<String>>>,
+    ignored_hashes: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl ClipboardListener {
@@ -18,7 +23,7 @@ impl ClipboardListener {
         #[cfg(target_os = "windows")]
         {
             let paused = Arc::new(AtomicBool::new(false));
-            let ignored_hashes = Arc::new(Mutex::new(HashSet::new()));
+            let ignored_hashes = Arc::new(Mutex::new(HashMap::new()));
             start_windows_listener(app, Arc::clone(&paused), Arc::clone(&ignored_hashes))?;
             return Ok(Self {
                 paused,
@@ -34,7 +39,13 @@ impl ClipboardListener {
     }
 
     pub fn set_paused(&self, paused: bool) {
-        self.paused.store(paused, Ordering::Relaxed);
+        let previous = self.paused.swap(paused, Ordering::Relaxed);
+        // 暂停期间不会消费 ignore 标记，切换状态时直接清空，防止恢复监听后吞掉一次真实复制
+        if previous != paused {
+            if let Ok(mut hashes) = self.ignored_hashes.lock() {
+                hashes.clear();
+            }
+        }
     }
 
     pub fn is_paused(&self) -> bool {
@@ -43,7 +54,9 @@ impl ClipboardListener {
 
     pub fn ignore_next_write(&self, content: &str) {
         if let Ok(mut hashes) = self.ignored_hashes.lock() {
-            hashes.insert(content_hash(content));
+            let now = Instant::now();
+            hashes.retain(|_, inserted| now.duration_since(*inserted) < IGNORED_WRITE_TTL);
+            hashes.insert(content_hash(content), now);
         }
     }
 
@@ -54,15 +67,25 @@ impl ClipboardListener {
     }
 }
 
+/// 消费一次 ignore 标记。返回 true 表示这次剪贴板变化是本程序自己写进去的。
+fn consume_ignored_write(ignored_hashes: &Mutex<HashMap<String, Instant>>, content: &str) -> bool {
+    let hash = content_hash(content);
+    if let Ok(mut hashes) = ignored_hashes.lock() {
+        if let Some(inserted) = hashes.remove(&hash) {
+            return inserted.elapsed() < IGNORED_WRITE_TTL;
+        }
+    }
+    false
+}
+
 #[cfg(target_os = "windows")]
 fn start_windows_listener(
     app: AppHandle,
     paused: Arc<AtomicBool>,
-    ignored_hashes: Arc<Mutex<HashSet<String>>>,
+    ignored_hashes: Arc<Mutex<HashMap<String, Instant>>>,
 ) -> Result<(), String> {
     use std::sync::mpsc::sync_channel;
     use std::thread;
-    use std::time::Duration;
 
     let (ready_tx, ready_rx) = sync_channel(1);
     thread::Builder::new()
@@ -85,14 +108,14 @@ fn start_windows_listener(
 struct ListenerContext {
     app: AppHandle,
     paused: Arc<AtomicBool>,
-    ignored_hashes: Arc<Mutex<HashSet<String>>>,
+    ignored_hashes: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 #[cfg(target_os = "windows")]
 unsafe fn run_message_loop(
     app: AppHandle,
     paused: Arc<AtomicBool>,
-    ignored_hashes: Arc<Mutex<HashSet<String>>>,
+    ignored_hashes: Arc<Mutex<HashMap<String, Instant>>>,
     ready_tx: std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
     use std::ffi::c_void;
@@ -209,23 +232,23 @@ unsafe extern "system" fn window_proc(
 impl ListenerContext {
     fn handle_update(&self) {
         use std::thread;
-        use std::time::Duration;
 
         if self.paused.load(Ordering::Relaxed) {
             return;
         }
 
-        // Some applications publish clipboard data asynchronously. Retry briefly
-        // instead of polling continuously, while keeping the UI thread untouched.
-        thread::sleep(Duration::from_millis(40));
-        for attempt in 0..4 {
+        // 部分应用是延迟渲染剪贴板内容的，需要读不到时再重试。
+        // 这里先立刻读一次，失败后按 5/10/20ms 退避，总占用 35ms。
+        // 原实现固定先等 40ms，连续快速复制时会丢掉中间的事件。
+        let mut last_error = String::new();
+        for delay in [0u64, 5, 10, 20] {
+            if delay > 0 {
+                thread::sleep(Duration::from_millis(delay));
+            }
             match read_unicode_clipboard() {
                 Ok(Some(content)) => {
-                    let hash = content_hash(&content);
-                    if let Ok(mut ignored_hashes) = self.ignored_hashes.lock() {
-                        if ignored_hashes.remove(&hash) {
-                            return;
-                        }
+                    if consume_ignored_write(&self.ignored_hashes, &content) {
+                        return;
                     }
                     let database = self.app.state::<Database>();
                     match database.upsert_text(&content) {
@@ -239,13 +262,10 @@ impl ListenerContext {
                     return;
                 }
                 Ok(None) => return,
-                Err(_) if attempt < 3 => thread::sleep(Duration::from_millis(15)),
-                Err(error) => {
-                    eprintln!("读取 Windows 剪贴板失败: {error}");
-                    return;
-                }
+                Err(error) => last_error = error,
             }
         }
+        eprintln!("读取 Windows 剪贴板失败: {last_error}");
     }
 }
 
@@ -256,12 +276,17 @@ fn read_unicode_clipboard() -> Result<Option<String>, String> {
     use windows::Win32::System::DataExchange::{
         CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
     };
-    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock, GlobalSize};
 
     unsafe {
         const CF_UNICODETEXT: u32 = 13;
         OpenClipboard(None).map_err(|error| error.to_string())?;
         let result = (|| {
+            // 密码管理器会打上"排除剪贴板历史"标记，Windows 自带历史会跳过，这里也必须跳过
+            if clipboard_excluded_from_history() {
+                return Ok(None);
+            }
+
             if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
                 return Ok(None);
             }
@@ -272,22 +297,55 @@ fn read_unicode_clipboard() -> Result<Option<String>, String> {
                 return Err("无法锁定 Windows 剪贴板内存".to_string());
             }
 
-            let mut length = 0;
-            let text = loop {
-                let character = *(pointer as *const u16).add(length);
-                if character == 0 {
-                    break String::from_utf16_lossy(slice::from_raw_parts(
-                        pointer as *const u16,
-                        length,
-                    ));
-                }
+            // 用 GlobalSize 定上界：剪贴板内存由别的进程提供，
+            // 若没有 null 结尾，靠"扫到 0 为止"会越界读。
+            let size = GlobalSize(HGLOBAL(handle.0));
+            let max_units = size / std::mem::size_of::<u16>();
+            let mut length = 0usize;
+            while length < max_units && *(pointer as *const u16).add(length) != 0 {
                 length += 1;
-            };
+            }
+            let text = String::from_utf16_lossy(slice::from_raw_parts(pointer as *const u16, length));
 
             let _ = GlobalUnlock(HGLOBAL(handle.0));
             Ok(Some(text))
         })();
         let _ = CloseClipboard();
         result
+    }
+}
+
+/// 检查 Windows 剪贴板的"不要记录"标记。
+/// 调用前必须已经 OpenClipboard。
+#[cfg(target_os = "windows")]
+fn clipboard_excluded_from_history() -> bool {
+    use windows::core::w;
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::DataExchange::{
+        GetClipboardData, IsClipboardFormatAvailable, RegisterClipboardFormatW,
+    };
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+
+    unsafe {
+        // 标记一：ExcludeClipboardContentFromMonitorProcessing（存在即排除）
+        let exclude = RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"));
+        if exclude != 0 && IsClipboardFormatAvailable(exclude).is_ok() {
+            return true;
+        }
+
+        // 标记二：CanIncludeInClipboardHistory == 0（显式声明不要进历史）
+        let can_include = RegisterClipboardFormatW(w!("CanIncludeInClipboardHistory"));
+        if can_include != 0 && IsClipboardFormatAvailable(can_include).is_ok() {
+            if let Ok(handle) = GetClipboardData(can_include) {
+                let pointer = GlobalLock(HGLOBAL(handle.0));
+                if !pointer.is_null() {
+                    let flag = *(pointer as *const u32);
+                    let _ = GlobalUnlock(HGLOBAL(handle.0));
+                    return flag == 0;
+                }
+            }
+        }
+
+        false
     }
 }

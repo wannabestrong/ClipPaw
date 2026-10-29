@@ -28,6 +28,15 @@ pub struct ListQuery {
 pub struct AppSettings {
     pub max_history: u32,
     pub cleanup_days: u32,
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+pub const DEFAULT_LANGUAGE: &str = "zh-CN";
+const SUPPORTED_LANGUAGES: [&str; 2] = ["zh-CN", "en"];
+
+fn default_language() -> String {
+    DEFAULT_LANGUAGE.to_string()
 }
 
 pub struct Database {
@@ -65,7 +74,12 @@ impl Database {
             .connection
             .lock()
             .map_err(|_| "数据库锁已失效".to_string())?;
-        let limit = query.limit.unwrap_or(1000).clamp(1, 10_000) as i64;
+        // 未显式指定条数时，跟随用户设置里的 max_history，
+        // 避免前端写死 1000 把 5000/10000 的设置压掉。
+        let limit = query
+            .limit
+            .unwrap_or_else(|| read_setting_u32(&connection, "max_history", 1000))
+            .clamp(1, 10_000) as i64;
         let search = query.search.unwrap_or_default().trim().to_string();
 
         let mut statement = connection
@@ -171,28 +185,19 @@ impl Database {
             .connection
             .lock()
             .map_err(|_| "数据库锁已失效".to_string())?;
-        let read_setting = |key: &str, fallback: u32| -> Result<u32, String> {
-            let value: Option<String> = connection
-                .query_row(
-                    "SELECT value FROM app_settings WHERE key = ?1",
-                    params![key],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|error| format!("读取设置失败: {error}"))?;
-            Ok(value
-                .and_then(|item| item.parse::<u32>().ok())
-                .unwrap_or(fallback))
-        };
         Ok(AppSettings {
-            max_history: read_setting("max_history", 1000)?,
-            cleanup_days: read_setting("cleanup_days", 30)?,
+            max_history: read_setting_u32(&connection, "max_history", 1000),
+            cleanup_days: read_setting_u32(&connection, "cleanup_days", 30),
+            language: read_setting_text(&connection, "language")
+                .filter(|value| SUPPORTED_LANGUAGES.contains(&value.as_str()))
+                .unwrap_or_else(default_language),
         })
     }
 
     pub fn update_settings(&self, settings: AppSettings) -> Result<AppSettings, String> {
         if ![100, 500, 1000, 5000, 10000].contains(&settings.max_history)
             || ![0, 1, 7, 30].contains(&settings.cleanup_days)
+            || !SUPPORTED_LANGUAGES.contains(&settings.language.as_str())
         {
             return Err("设置值不在允许范围内".to_string());
         }
@@ -201,16 +206,11 @@ impl Database {
             .lock()
             .map_err(|_| "数据库锁已失效".to_string())?;
         for (key, value) in [
-            ("max_history", settings.max_history),
-            ("cleanup_days", settings.cleanup_days),
+            ("max_history", settings.max_history.to_string()),
+            ("cleanup_days", settings.cleanup_days.to_string()),
+            ("language", settings.language.clone()),
         ] {
-            connection
-                .execute(
-                    "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
-                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    params![key, value.to_string()],
-                )
-                .map_err(|error| format!("保存设置失败: {error}"))?;
+            write_setting(&connection, key, &value)?;
         }
         Ok(settings)
     }
@@ -301,7 +301,47 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             .map_err(|error| format!("执行数据库迁移 2 失败: {error}"))?;
     }
 
+    if applied.unwrap_or(0) < 3 {
+        connection
+            .execute_batch(
+                "INSERT INTO app_settings (key, value) VALUES ('language', 'zh-CN')
+                     ON CONFLICT(key) DO NOTHING;
+                 INSERT INTO schema_migrations (version, applied_at)
+                     VALUES (3, strftime('%s', 'now'));",
+            )
+            .map_err(|error| format!("执行数据库迁移 3 失败: {error}"))?;
+    }
+
     Ok(())
+}
+
+fn read_setting_text(connection: &Connection, key: &str) -> Option<String> {
+    connection
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+}
+
+fn read_setting_u32(connection: &Connection, key: &str, fallback: u32) -> u32 {
+    read_setting_text(connection, key)
+        .and_then(|item| item.parse::<u32>().ok())
+        .unwrap_or(fallback)
+}
+
+fn write_setting(connection: &Connection, key: &str, value: &str) -> Result<(), String> {
+    connection
+        .execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("保存设置失败: {error}"))
 }
 
 fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipboardRecord> {

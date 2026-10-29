@@ -11,14 +11,18 @@ export type ClipboardRecord = {
   hash: string;
 };
 
+export type Language = "zh-CN" | "en";
+
 export type AppSettings = {
   max_history: number;
   cleanup_days: number;
+  language: Language;
 };
 
 export async function listClipboardItems(search: string): Promise<ClipboardRecord[]> {
+  // 不传 limit，交给后端按用户设置的 max_history 决定条数
   return invoke<ClipboardRecord[]>("list_clipboard_items", {
-    query: { search: search || null, limit: 1000 },
+    query: { search: search || null, limit: null },
   });
 }
 
@@ -48,6 +52,18 @@ export function getAppSettings(): Promise<AppSettings> {
 
 export function updateAppSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke<AppSettings>("update_app_settings", { settings });
+}
+
+export function setAppLanguage(language: Language): Promise<void> {
+  return invoke("set_app_language", { language });
+}
+
+export function onListenerPausedChanged(
+  callback: (paused: boolean) => void,
+): Promise<UnlistenFn> {
+  return listen<boolean>("listener-paused-changed", (event) => {
+    callback(event.payload);
+  });
 }
 
 export function setClipboardListenerPaused(paused: boolean): Promise<boolean> {

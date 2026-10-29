@@ -9,10 +9,22 @@ lerna-debug.log*
 
 node_modules
 src-tauri/target
-release/ClipboardHistory-portable*
 dist
 dist-ssr
 *.local
+
+# 构建产物统一走 GitHub Releases，不入库
+release/
+*.exe
+*.msi
+*.msix
+
+# 本机环境配置（store-dir 之类带绝对路径，不该共享）
+.npmrc
+.npmrc.local
+
+# 本地工具缓存
+.workbuddy-ai/
 
 # Editor directories and files
 .vscode/*
