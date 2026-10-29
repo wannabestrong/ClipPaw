@@ -169,13 +169,14 @@ impl Database {
         Ok(affected > 0)
     }
 
+    /// 清空历史记录，保留置顶项（置顶代表用户明确想留着）。
     pub fn clear(&self) -> Result<u64, String> {
         let connection = self
             .connection
             .lock()
             .map_err(|_| "数据库锁已失效".to_string())?;
         let affected = connection
-            .execute("DELETE FROM clipboard_items", [])
+            .execute("DELETE FROM clipboard_items WHERE is_pinned = 0", [])
             .map_err(|error| format!("清理历史记录失败: {error}"))?;
         Ok(affected as u64)
     }

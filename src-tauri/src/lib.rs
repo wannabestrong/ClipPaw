@@ -26,14 +26,6 @@ fn list_clipboard_items(
 }
 
 #[tauri::command]
-fn save_clipboard_text(
-    database: State<'_, Database>,
-    content: String,
-) -> Result<ClipboardRecord, String> {
-    database.upsert_text(&content)
-}
-
-#[tauri::command]
 fn delete_clipboard_item(database: State<'_, Database>, id: i64) -> Result<bool, String> {
     database.delete(id)
 }
@@ -308,7 +300,6 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .app_name("ClipPaw")
@@ -421,7 +412,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_clipboard_items,
-            save_clipboard_text,
             delete_clipboard_item,
             set_clipboard_item_pinned,
             clear_clipboard_history,

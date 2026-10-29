@@ -46,6 +46,10 @@ export function setClipboardItemPinned(id: number, pinned: boolean): Promise<boo
   return invoke<boolean>("set_clipboard_item_pinned", { id, pinned });
 }
 
+export function clearClipboardHistory(): Promise<number> {
+  return invoke<number>("clear_clipboard_history");
+}
+
 export function getAppSettings(): Promise<AppSettings> {
   return invoke<AppSettings>("get_app_settings");
 }
