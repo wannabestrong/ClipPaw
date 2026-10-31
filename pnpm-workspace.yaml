@@ -1,3 +1,5 @@
+packages:
+  - '.'
+
 allowBuilds:
   esbuild: true
-storeDir: G:/DevTools/pnpm-store

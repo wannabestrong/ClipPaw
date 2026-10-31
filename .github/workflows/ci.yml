@@ -14,7 +14,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 12
 
       - uses: actions/setup-node@v4
         with:
@@ -33,6 +33,12 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Type check
+        working-directory: src-tauri
+        run: cargo check --locked --all-targets
+
+      # 只跑库目标的单元测试：crate 同时是 cdylib，链接整个 crate 在
+      # GNU 工具链下会因导出序号溢出失败（export ordinal too large）
       - name: Test
         working-directory: src-tauri
-        run: cargo test --locked
+        run: cargo test --locked --lib
