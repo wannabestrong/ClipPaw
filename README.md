@@ -56,6 +56,20 @@ pnpm tauri build    # 构建 exe 与安装包
 4. 链接时会出现 `.rsrc merge failure: multiple non-default manifests` 警告，
    不影响运行，但高 DPI 下的缩放表现可能与 MSVC 构建有差异
 
+## 发布
+
+推送 `v*` 形式的 tag 会触发 `Release` workflow，在 GitHub 的 Windows runner 上自动
+构建 NSIS 安装包和 MSI，并作为附件挂到对应的 Release 上：
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+本地 `pnpm tauri build` 会顺带生成便携版目录
+`src-tauri/target/release/clippaw.exe`（GNU 工具链下记得把它和
+`WebView2Loader.dll` 放一起）。
+
 ## 已知限制
 
 - 仅支持 Windows（剪贴板监听依赖 Win32 `AddClipboardFormatListener`）
